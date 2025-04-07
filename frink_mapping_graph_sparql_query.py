@@ -5,6 +5,7 @@ import rdflib.plugins
 import rdflib.plugins.sparql
 import rdflib
 import json
+import gzip
 
 import sys
 from SPARQLWrapper import SPARQLWrapper, JSON
@@ -59,8 +60,9 @@ pred_dict = {
 
 
 def main():
-    # log_file = "log.txt"
-    # sys.stdout = open(log_file, "w", encoding="utf-8")
+    save_stdout = sys.stdout
+    log = open("log-20250407.txt", "w", encoding="utf-8")
+    sys.stdout = log
     # Complete wiki dump
     # output_file = "latest-all.ttl.gz"
     # wikidata_graph = Graph()
@@ -87,28 +89,24 @@ def main():
 
         # only need subj obj
         if task == "ONEANDTWO":
-            query = """SELECT distinct ?subj ?obj WHERE {
+            query = """SELECT ?subj ?obj WHERE {
             ?subj"""
             query += " <" + pred + "> "
             query += """
             ?obj .
-            FILTER (STRSTARTS(STR(?subj), "http://www.wikidata.org/"))
             }
             """
 
         if task == "THREE":
-            query = """SELECT distinct ?subj ?pred ?obj WHERE {
+            query = """SELECT ?subj ?pred ?obj WHERE {
             ?subj ?pred ?obj .
             """
             query += """VALUES ?pred {"""
             query += pred
             query += """
             }
-            FILTER (STRSTARTS(STR(?subj), "http://www.wikidata.org/"))
-            FILTER isLiteral(?obj)
             }
             """
-        # print(query)
         results = get_results(endpoint_url, query)
         return results
 
@@ -137,108 +135,153 @@ def main():
 
     string_object_dict = make_formatter_url_dict()
 
-    mapping_graph = Graph()
+    found = set()
 
-    print("TASK 1")
-    predicates = ["http://www.wikidata.org/prop/direct/P2888",
-                  "http://www.wikidata.org/prop/direct/P1709",
-                  "http://www.wikidata.org/prop/direct/P3950",
-                  "http://www.wikidata.org/prop/direct/P1628",
-                  "http://www.wikidata.org/prop/direct/P2235",
-                  "http://www.wikidata.org/prop/direct/P2236"]
+    with gzip.open("mapping_graph_final-20250407-new-test.nt.gz", "wt",
+                   encoding="utf-8") as f:
 
-    for pred in predicates:
-        results = use_sparql_query(pred, "ONEANDTWO")
-        for result in results["results"]["bindings"]:
-            subj = result['subj']['value']
-            obj = result['obj']['value']
+        print("TASK 1")
+        predicates = ["http://www.wikidata.org/prop/direct/P2888",
+                      "http://www.wikidata.org/prop/direct/P1709",
+                      "http://www.wikidata.org/prop/direct/P3950",
+                      "http://www.wikidata.org/prop/direct/P1628",
+                      "http://www.wikidata.org/prop/direct/P2235",
+                      "http://www.wikidata.org/prop/direct/P2236"]
 
-            # TASK 1 swap obj & subj
-            if str(pred) == "http://www.wikidata.org/prop/direct/P2236":
-                mapping_graph.add((URIRef(obj), URIRef("http://www.w3.org/2000/01/rdf-schema#subPropertyOf"), URIRef(subj)))
-                continue
+        # print tests of different categories
+        test_task1_a = 0
+        test_task1_b = 0
+        test_task2 = 0
+        test_task3 = 0
 
-            # TASK 1
-            if str(pred) in pred_dict.keys():
-                mapping_graph.add((URIRef(subj), URIRef(pred_dict[str(pred)]),
-                                   URIRef(obj)))
-                continue
-
-    print("TASK 2")  # TASK 2: prefix adjust (direct-normalized)
-    # Query from Task 2 from Mahir
-    query = """select distinct ?property ?propertyLabel (str(?normalizedPredicate_) as ?normalizedPredicate) {
-        ?property wikibase:propertyType wikibase:ExternalId ; wdt:P1921 [] ; wikibase:directClaimNormalized ?normalizedPredicate_ .
-        SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],mul,en". }
-    }
-    """
-    # get query results (normalizedPredicates)
-    results = get_results(endpoint_url, query)
-    predicates = [i["normalizedPredicate"]["value"] for i in results["results"]["bindings"]]
-
-    bad_predicates = []
-    pred_count = 0
-    for pred in predicates:
-        print(pred_count)
-        pred_count += 1
-        results = use_sparql_query(pred, task="ONEANDTWO")
-        if results is None:
-            bad_predicates.append(pred)
-        else:
+        for pred in predicates:
+            results = use_sparql_query(pred, "ONEANDTWO")
+            # print(results)
             for result in results["results"]["bindings"]:
                 subj = result['subj']['value']
                 obj = result['obj']['value']
-                # print(subj, pred, obj)
-                mapping_graph.add((URIRef(subj), URIRef("http://www.w3.org/2004/02/skos/core#exactMatch"), URIRef(obj)))
 
-    with open("bad_predicates_task2_list.txt", "w", encoding="utf-8") as f:
-        for pred in bad_predicates:
-            f.write(f"{pred}\n")
+                # TASK 1 swap obj & subj
+                if str(pred) == "http://www.wikidata.org/prop/direct/P2236":
+                    subj_uri = URIRef(subj)
+                    pred_uri = URIRef("http://www.w3.org/2000/01/rdf-schema#subPropertyOf")
+                    obj_uri = URIRef(obj)
+                    out_triple = f"{obj_uri.n3()} {pred_uri.n3()} {subj_uri.n3()} .\n"
+                    if out_triple not in found:
+                        found.add(out_triple)
+                        f.write(out_triple)
+                        if test_task1_a < 10:
+                            print("\ntest_task1_a swap")
+                            print(f"original triple:\n{subj} {pred} {obj} .\nout triple:\n{out_triple}")
+                            # print(out_triple)
+                            test_task1_a += 1
 
-    print("TASK 3")
-    # NOTE: P2427 is invalid
-    predicates3a = """
-    <http://www.wikidata.org/prop/direct/P2037>
-    <http://www.wikidata.org/prop/direct/P10283>
-    <http://www.wikidata.org/prop/direct/P6782>
-    <http://www.wikidata.org/prop/direct/P882>
-    <http://www.wikidata.org/prop/direct/P2892>
-    """
+                # TASK 1
+                elif str(pred) in pred_dict.keys():
+                    subj_uri = URIRef(subj)
+                    pred_uri = URIRef(pred_dict[str(pred)])
+                    obj_uri = URIRef(obj)
+                    out_triple = f"{subj_uri.n3()} {pred_uri.n3()} {obj_uri.n3()} .\n"
+                    if out_triple not in found:
+                        found.add(out_triple)
+                        f.write(out_triple)
+                        if test_task1_b < 10:
+                            print("\ntest_task1_b")
+                            print(f"original triple:\n{subj} {pred} {obj} .\nout triple:\n{out_triple}")
+                            # print(out_triple)
+                            test_task1_b += 1
 
-    predicates3b = """
-    <http://www.wikidata.org/prop/direct/P3624>
-    <http://www.wikidata.org/prop/direct/P3151>
-    <http://www.wikidata.org/prop/direct/P7471>
-    """
+        print("\n\nTASK 2")  # TASK 2: prefix adjust (direct-normalized)
+        # Query from Task 2 from Mahir
+        query = """select ?property ?propertyLabel (str(?normalizedPredicate_) as ?normalizedPredicate) {
+        ?property wikibase:propertyType wikibase:ExternalId ; wdt:P1921 [] ; wikibase:directClaimNormalized ?normalizedPredicate_ .
+        SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],mul,en". }
+        }
+        """
+        results = get_results(endpoint_url, query)
 
-    # TASK 3 object is a string in rdflib
-    for predicates in [predicates3a, predicates3b]:
+        predicates = [i["normalizedPredicate"]["value"] for i in results["results"]["bindings"]]
 
-        results = use_sparql_query(predicates, task="THREE")
-        for result in results["results"]["bindings"]:
-            subj = result['subj']['value']
-            pred = result['pred']['value']
-            obj = result['obj']['value']
-
-            # NOTE This space is problematic
-            if obj == "NVIDIA Omniverse":
-                print("nVIDIA")
-                continue
+        for pred in predicates:
+            results = use_sparql_query(pred, task="ONEANDTWO")
+            if results is None:
+                print("bad predicate")
+                print(pred)
             else:
-                pass
+                for result in results["results"]["bindings"]:
+                    # subj, obj = result
+                    subj = result['subj']['value']
+                    obj = result['obj']['value']
+                    subj_uri = URIRef(subj)
+                    pred_uri = URIRef("http://www.w3.org/2004/02/skos/core#exactMatch")
+                    obj_uri = URIRef(obj)
+                    out_triple = f"{subj_uri.n3()} {pred_uri.n3()} {obj_uri.n3()} .\n"
+                    if out_triple not in found:
+                        found.add(out_triple)
+                        f.write(out_triple)
+                        if test_task2 < 10:
+                            print("\ntest_task2")
+                            print(f"original triple:\n{subj} {pred} {obj} .\nout triple:\n{out_triple}")
+                            # print(out_triple)
+                            test_task2 += 1
 
-            # if pred starts with this, get formatter url from dict
-            entity_id = str(pred).removeprefix("http://www.wikidata.org/prop/direct/")
-            formatter_url = string_object_dict[entity_id]
+        print("\n\nTASK 3")
+        # NOTE: P2427 is invalid
+        # was split up because some were failing (due to being invalid)
+        # kept split up because originally serialization was taking too long
+        predicates3a = """
+        <http://www.wikidata.org/prop/direct/P2037>
+        <http://www.wikidata.org/prop/direct/P10283>
+        <http://www.wikidata.org/prop/direct/P6782>
+        <http://www.wikidata.org/prop/direct/P882>
+        <http://www.wikidata.org/prop/direct/P2892>
+        """
 
-            obj = re.sub(r"\$1", obj, formatter_url)
+        predicates3b = """
+        <http://www.wikidata.org/prop/direct/P3624>
+        <http://www.wikidata.org/prop/direct/P3151>
+        <http://www.wikidata.org/prop/direct/P7471>
+        """
 
-            # fix the url to use the string
-            mapping_graph.add((URIRef(subj), URIRef("http://www.w3.org/2004/02/skos/core#exactMatch"), URIRef(obj)))
+        # TASK 3 object is a string in rdflib
+        for predicates in [predicates3a, predicates3b]:
 
-    print("SERIALIZE")
-    with open("mapping_graph_final-20250403.ttl", "wb") as f:
-        mapping_graph.serialize(destination=f, format="turtle")
+            results = use_sparql_query(predicates, task="THREE")
+            for result in results["results"]["bindings"]:
+                subj = result['subj']['value']
+                pred = result['pred']['value']
+                obj = result['obj']['value']
 
+                # # NOTE This space is problematic
+                if obj == "NVIDIA Omniverse":
+                    print("nVIDIA fails due to spaces")
+                    print(subj, pred, obj)
+                    continue
+                else:
+                    pass
+
+                # if pred starts with this, get formatter url from dict
+                entity_id = str(pred).removeprefix("http://www.wikidata.org/prop/direct/")
+                formatter_url = string_object_dict[entity_id]
+                obj_fix = re.sub(r"\$1", obj, formatter_url)
+
+                # fix the url to use the string
+                subj_uri = URIRef(subj)
+                pred_uri = URIRef("http://www.w3.org/2004/02/skos/core#exactMatch")
+                obj_uri = URIRef(obj_fix)
+
+                out_triple = f"{subj_uri.n3()} {pred_uri.n3()} {obj_uri.n3()} .\n"
+                if out_triple not in found:
+                    found.add(out_triple)
+                    f.write(out_triple)
+
+                    if test_task3 < 10:
+                        print("\ntest_task3")
+                        print(f"original triple:\n{subj} {pred} {obj} .\nout triple:\n{out_triple}")
+                        test_task3 += 1
+
+    sys.stdout = save_stdout
+    log.close()
 
 if __name__ == "__main__":
     main()
